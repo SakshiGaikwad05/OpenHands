@@ -41,8 +41,6 @@ import {
   isClassifyAndSwitchLLMObservationEvent,
   isCanvasUIActionEvent,
   isAutomationFormUpdateActionEvent,
-  isLaunchChildConversationActionEvent,
-  isRequestSecretActionEvent,
 } from "#/types/agent-server/type-guards";
 import {
   asSessionFrame,
@@ -54,8 +52,10 @@ import {
 } from "#/utils/streaming-delta-batcher";
 import { handleCanvasUIAction } from "#/services/canvas-ui";
 import { handleAutomationFormUpdateAction } from "#/services/automation-form";
-import { handleLaunchChildConversationAction } from "#/services/child-conversation-launch";
-import { handleRequestSecretAction } from "#/services/secret-request";
+import {
+  dispatchClientToolCall,
+  dispatchUnansweredClientToolCalls,
+} from "#/services/client-tool-dispatch";
 import { ConversationStateUpdateEventStats } from "#/types/agent-server/core/events/conversation-state-event";
 import type {
   ConversationErrorEvent,
@@ -450,6 +450,13 @@ export function ConversationWebSocketProvider({
     conversationId,
     consumeMatchingPendingMessage,
   ]);
+
+  // A client tool call made while no tab was connected arrives only in this
+  // page: the socket resumes after it, and a replay is skipped as a duplicate.
+  useEffect(() => {
+    if (!conversationId || !preloadedHistory) return;
+    dispatchUnansweredClientToolCalls(preloadedHistory.events, conversationId);
+  }, [preloadedHistory, conversationId]);
 
   // Build WebSocket URL from props.
   //
@@ -862,25 +869,11 @@ export function ConversationWebSocketProvider({
             );
           }
 
-          // Same client-tool pattern, but the work is a network call: launch
-          // the requested child conversation and post the outcome back so the
-          // agent learns the id the server-side acknowledgement can't carry.
-          if (conversationId && isLaunchChildConversationActionEvent(event)) {
-            void handleLaunchChildConversationAction(
-              event.action,
-              conversationId,
-              event.tool_call_id,
-            );
-          }
-
-          // Same pattern again: the user answers in a modal, and the outcome
-          // is posted back once they close it.
-          if (conversationId && isRequestSecretActionEvent(event)) {
-            void handleRequestSecretAction(
-              event.action,
-              conversationId,
-              event.tool_call_id,
-            );
+          // Client tools whose outcome is posted back to the agent: launching
+          // a child conversation, and asking the user for a secret. History
+          // dispatches the ones that land while no tab is connected.
+          if (conversationId) {
+            dispatchClientToolCall(event, conversationId);
           }
         }
       } catch (error) {

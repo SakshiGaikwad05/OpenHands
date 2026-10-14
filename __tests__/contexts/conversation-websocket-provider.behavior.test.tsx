@@ -21,7 +21,9 @@ import { useGoalStore } from "#/stores/goal-store";
 import { useModelStore } from "#/stores/model-store";
 import useMetricsStore from "#/stores/metrics-store";
 import { useFilesTabStore } from "#/stores/files-tab-store";
+import { useSecretRequestStore } from "#/stores/secret-request-store";
 import EventService from "#/api/event-service/event-service.api";
+import { SecretsService } from "#/api/secrets-service";
 import { SERVER_CONNECTION_ERROR_MESSAGE } from "#/constants/server-connection-error";
 import { getStoredConversationMetadata } from "#/api/conversation-metadata-store";
 import {
@@ -381,6 +383,7 @@ describe("Conversation websocket behavior", () => {
       selectedPath: null,
       selectedConversationId: null,
     });
+    useSecretRequestStore.setState({ requests: [] });
   });
 
   afterEach(() => {
@@ -1909,6 +1912,89 @@ describe("Conversation websocket behavior", () => {
       action,
       "conv-main",
       "call-launch",
+    );
+  });
+
+  it("launches a child requested while no tab was connected, once", () => {
+    const action = {
+      kind: "ClientAction_launch_child_conversation",
+      target: "local",
+      task: "Inspect tests",
+    };
+    const launch = makeActionEvent(
+      "launch",
+      action,
+      "launch_child_conversation",
+    );
+    historyCapture.result.data = {
+      events: [makeMessageEvent("01", "user", ["Split the work"]), launch],
+      afterSeq: 1,
+    };
+
+    renderProvider();
+    dispatchMain(launch);
+
+    expect(socketCapture.launchChild).toHaveBeenCalledTimes(1);
+    expect(socketCapture.launchChild).toHaveBeenCalledWith(
+      action,
+      "conv-main",
+      "call-launch",
+    );
+  });
+
+  it("leaves client tool calls in history alone once a user message follows them", () => {
+    historyCapture.result.data = {
+      events: [
+        makeActionEvent(
+          "launch",
+          {
+            kind: "ClientAction_launch_child_conversation",
+            target: "local",
+            task: "Inspect tests",
+          },
+          "launch_child_conversation",
+        ),
+        makeMessageEvent("02", "user", [
+          '[child-conversation] {"status":"launched"}',
+        ]),
+      ],
+      afterSeq: 1,
+    };
+
+    renderProvider();
+
+    expect(socketCapture.launchChild).not.toHaveBeenCalled();
+  });
+
+  it("asks for a secret the agent requested while no tab was connected", async () => {
+    vi.spyOn(SecretsService, "getSecretsOrThrow").mockResolvedValue([]);
+    historyCapture.result.data = {
+      events: [
+        makeMessageEvent("01", "user", ["Deploy the app"]),
+        makeActionEvent(
+          "secret",
+          {
+            kind: "ClientAction_request_secret",
+            name: "GITHUB_TOKEN",
+            reason: "Push the release branch",
+          },
+          "request_secret",
+        ),
+      ],
+      afterSeq: 1,
+    };
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(useSecretRequestStore.getState().requests).toEqual([
+        {
+          conversationId: "conv-main",
+          toolCallId: "call-secret",
+          name: "GITHUB_TOKEN",
+          reason: "Push the release branch",
+        },
+      ]),
     );
   });
 
